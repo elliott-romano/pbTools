@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Ripple Xerox</title>
+<title>Scan Smear</title>
 <style>
   :root {
     --bg: #0d0e12;
@@ -148,37 +148,59 @@
 
   <div id="panel">
     <header>
-      <h1>Ripple Xerox</h1>
-      <p>Click the canvas to set where the ripples start.</p>
+      <h1>Scan Smear</h1>
+      <p>Click the canvas to set the vanishing point / smear origin.</p>
     </header>
     <div class="scroll">
       <div class="btns">
         <button id="loadBtn" class="primary">Load image</button>
-        <button id="centerBtn">Re-center</button>
+        <button id="centerBtn">Center origin</button>
       </div>
       <input id="fileInput" type="file" accept="image/*" hidden />
 
-      <div class="group">
-        <div class="label">Repetition</div>
-        <!-- controls injected by JS -->
-        <div id="g-rep"></div>
+      <div class="ctrl" style="margin-top:14px">
+        <div class="row"><span class="name">Preset</span></div>
+        <select id="preset">
+          <option value="tunnel">Perspective tunnel</option>
+          <option value="smear">Vertical smear</option>
+          <option value="fan">Fan / radial echo</option>
+        </select>
       </div>
 
       <div class="group">
-        <div class="label">Ripples</div>
-        <div id="g-rip"></div>
+        <div class="label">Geometry</div>
+        <div id="g-geo"></div>
       </div>
 
       <div class="group">
-        <div class="label">Organic variation</div>
-        <div id="g-org"></div>
+        <div class="label">Stepping (staircase)</div>
+        <div id="g-step"></div>
+      </div>
+
+      <div class="group">
+        <div class="label">Slit-scan</div>
+        <div id="g-slit"></div>
+      </div>
+
+      <div class="group">
+        <div class="label">Texture</div>
+        <div id="g-tex"></div>
+      </div>
+
+      <div class="group">
+        <div class="label">Tone (black &amp; white)</div>
+        <div class="toggle-row">
+          <input type="checkbox" id="invert" />
+          <label for="invert">Invert</label>
+        </div>
+        <div id="g-tone"></div>
       </div>
 
       <div class="group">
         <div class="label">Motion</div>
         <div class="toggle-row">
           <input type="checkbox" id="animate" />
-          <label for="animate">Animate (ripples flow)</label>
+          <label for="animate">Animate (flow / shimmer)</label>
         </div>
         <div id="g-mot"></div>
       </div>
@@ -188,7 +210,7 @@
         <div class="ctrl">
           <div class="row"><span class="name">Edge wrap</span></div>
           <select id="wrapMode">
-            <option value="mirror">Mirror (seamless ripples)</option>
+            <option value="mirror">Mirror (seamless)</option>
             <option value="clamp">Clamp (smear edges)</option>
             <option value="repeat">Tile (repeat)</option>
           </select>

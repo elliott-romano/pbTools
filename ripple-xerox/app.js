@@ -1,5 +1,7 @@
-/* Ripple Xerox — WebGL2 feedback/Droste echo warped by radial ripples + fbm noise.
+/* Scan Smear — WebGL2 slit-scan + perspective-echo smear, black & white.
+   Recreates the directional "combed" smear / stepped perspective-tunnel look.
    No build step, no deps. Open index.html directly. */
+
 function showError(msg) {
   let el = document.getElementById("err-banner");
   if (!el) {
@@ -37,112 +39,102 @@ window.addEventListener("unhandledrejection", e =>
   out vec4 outColor;
 
   uniform sampler2D u_img;
-  uniform vec2  u_res;        // canvas resolution (px)
-  uniform vec2  u_center;     // ripple origin, uv space (0..1)
-  uniform float u_aspect;     // width / height
+  uniform vec2  u_res;
+  uniform vec2  u_vanish;   // vanishing point / smear origin (uv)
+  uniform float u_aspect;
 
-  uniform int   u_echoes;     // number of feedback copies
-  uniform float u_zoom;       // scale toward center per echo (1 = none)
-  uniform float u_falloff;    // weight decay per echo
-  uniform float u_rotate;     // radians rotation per echo
+  uniform int   u_steps;
+  uniform float u_zoom;     // per-step scale toward vanish (perspective). 1 = none
+  uniform float u_drift;    // per-step translate along angle (linear smear)
+  uniform float u_angle;    // radians
+  uniform float u_decay;    // accumulation weight falloff
 
-  uniform float u_rAmp;       // ripple displacement amplitude
-  uniform float u_rFreq;      // ripple spatial frequency
-  uniform float u_phase;      // animated phase
+  uniform float u_quant;    // 0..1 staircase amount
+  uniform float u_cell;     // quantization cell size (uv)
 
-  uniform float u_orgAmp;     // organic noise displacement amount
-  uniform float u_orgScale;   // noise spatial frequency
-  uniform float u_orgEvolve;  // per-echo noise evolution (variation between copies)
+  uniform float u_slitAmp;  // slit displacement amplitude
+  uniform float u_slitFreq; // slit displacement frequency across the scan axis
+  uniform float u_slitNoise;// organic noise mixed into the slit displacement
 
-  uniform float u_mix;        // blend effect over original (0..1)
-  uniform float u_gamma;      // contrast-ish accumulation shaping
+  uniform float u_striAmt;  // fine "combed" striation contrast
+  uniform float u_striFreq; // striation line frequency
+  uniform float u_grain;    // film grain / dust
 
-  // --- hash / value-noise fbm ---
-  float hash(vec2 p) {
-    p = fract(p * vec2(123.34, 345.45));
-    p += dot(p, p + 34.345);
-    return fract(p.x * p.y);
-  }
-  float vnoise(vec2 p) {
-    vec2 i = floor(p), f = fract(p);
-    vec2 u = f * f * (3.0 - 2.0 * f);
-    float a = hash(i + vec2(0.0, 0.0));
-    float b = hash(i + vec2(1.0, 0.0));
-    float c = hash(i + vec2(0.0, 1.0));
-    float d = hash(i + vec2(1.0, 1.0));
-    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-  }
-  float fbm(vec2 p) {
-    float s = 0.0, amp = 0.5;
-    for (int i = 0; i < 4; i++) {
-      s += amp * vnoise(p);
-      p = p * 2.02 + vec2(7.1, 3.7);
-      amp *= 0.5;
-    }
-    return s;
+  uniform float u_mono;     // 0..1 desaturate to grayscale
+  uniform float u_contrast;
+  uniform float u_black;    // black level (levels low)
+  uniform float u_white;    // white level (levels high)
+  uniform float u_invert;   // 0..1
+
+  uniform float u_mix;      // blend effect over original
+  uniform float u_phase;    // animated phase
+
+  float hash(vec2 p){ p=fract(p*vec2(123.34,345.45)); p+=dot(p,p+34.345); return fract(p.x*p.y); }
+  float vnoise(vec2 p){
+    vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.0-2.0*f);
+    float a=hash(i), b=hash(i+vec2(1.0,0.0)), c=hash(i+vec2(0.0,1.0)), d=hash(i+vec2(1.0,1.0));
+    return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);
   }
 
-  vec2 rot(vec2 v, float a) {
-    float c = cos(a), s = sin(a);
-    return mat2(c, -s, s, c) * v;
-  }
+  void main(){
+    vec2 asp  = vec2(u_aspect, 1.0);
+    vec2 dir  = vec2(cos(u_angle), sin(u_angle));
+    vec2 perp = vec2(-dir.y, dir.x);
 
-  void main() {
-    // aspect-corrected space so ripples are circular, centered on origin
-    vec2 uv = v_uv;
-    vec2 asp = vec2(u_aspect, 1.0);
-    vec2 p = (uv - u_center) * asp;   // position relative to center, corrected
-
+    vec2 p = v_uv;
     vec3 col = vec3(0.0);
-    float wsum = 0.0;
-    float w = 1.0;
+    float wsum = 0.0, w = 1.0;
 
-    int echoes = u_echoes;
-    for (int i = 0; i < 64; i++) {
-      if (i >= echoes) break;
-      float fi = float(i);
+    int steps = u_steps;
+    for (int i = 0; i < 128; i++) {
+      if (i >= steps) break;
 
-      float r = length(p);
-      vec2  dir = r > 1e-5 ? p / r : vec2(0.0);
+      vec2 sp = p;
 
-      // radial ripple wave (the "water" part)
-      float wave = sin(r * u_rFreq - u_phase);
-      // organic per-echo noise field (the "natural variation" part)
-      vec2 np = (p / asp + u_center) * u_orgScale + fi * u_orgEvolve;
-      float n = fbm(np) - 0.5;
+      // --- slit-scan: displace the sample ALONG the scan axis based on the
+      //     coordinate ACROSS it -> the fine combed striation / smear ---
+      float across = dot((sp - u_vanish) * asp, perp);
+      float s = sin(across * u_slitFreq - u_phase);
+      float n = vnoise(vec2(across * u_slitFreq * 0.15, float(i) * 0.7)) - 0.5;
+      sp += dir * ((s * u_slitAmp) + n * u_slitNoise) / asp;
 
-      // displace sample coordinate
-      p += dir * (wave * u_rAmp) + vec2(n) * u_orgAmp
-           + dir * (fbm(np * 1.7) - 0.5) * u_orgAmp;
+      // --- staircase quantization ---
+      vec2 q = floor(sp / u_cell + 0.5) * u_cell;
+      sp = mix(sp, q, u_quant);
 
-      // zoom toward center + rotate => the xerox "copy of a copy"
-      p = rot(p, u_rotate) * u_zoom;
+      vec3 c = texture(u_img, sp).rgb;
+      col += c * w; wsum += w; w *= u_decay;
 
-      // sample (convert back to uv)
-      vec2 suv = p / asp + u_center;
-      vec3 s = texture(u_img, suv).rgb;
-
-      col += s * w;
-      wsum += w;
-      w *= u_falloff;
+      // advance: perspective zoom toward vanish + parallel drift
+      p = u_vanish + (p - u_vanish) * u_zoom + dir * u_drift;
     }
-
     col /= max(wsum, 1e-4);
-    col = pow(col, vec3(u_gamma));
 
-    vec3 base = texture(u_img, uv).rgb;
-    col = mix(base, col, u_mix);
+    // --- tone / black & white ---
+    float lum = dot(col, vec3(0.299, 0.587, 0.114));
+    vec3 toned = mix(col, vec3(lum), u_mono);
+    toned = (toned - 0.5) * u_contrast + 0.5;                     // contrast
+    toned = (toned - u_black) / max(u_white - u_black, 1e-3);     // levels
 
-    outColor = vec4(col, 1.0);
+    // combed striation lines (parallel to the smear direction)
+    float comb = 0.5 + 0.5 * sin(dot(v_uv * asp, perp) * u_striFreq);
+    toned *= 1.0 - u_striAmt * comb;
+
+    // grain / dust
+    float g = hash(v_uv * u_res + vec2(u_phase, u_phase * 1.7)) - 0.5;
+    toned += g * u_grain;
+
+    toned = mix(toned, 1.0 - toned, u_invert);
+    toned = clamp(toned, 0.0, 1.0);
+
+    vec3 base = texture(u_img, v_uv).rgb;
+    outColor = vec4(mix(base, toned, u_mix), 1.0);
   }`;
 
   // ---------------------------------------------------------------- GL setup
   const canvas = document.getElementById("glcanvas");
   const gl = canvas.getContext("webgl2", { preserveDrawingBuffer: true, antialias: false });
-  if (!gl) {
-    alert("WebGL2 is not available in this browser.");
-    return;
-  }
+  if (!gl) { showError("WebGL2 is not available in this browser."); return; }
 
   function compile(type, src) {
     const sh = gl.createShader(type);
@@ -159,73 +151,104 @@ window.addEventListener("unhandledrejection", e =>
   gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
   gl.linkProgram(prog);
   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-    throw new Error(gl.getProgramInfoLog(prog));
+    throw new Error("program link failed:\n" + gl.getProgramInfoLog(prog));
   }
   gl.useProgram(prog);
 
-  // fullscreen triangle
   const vao = gl.createVertexArray();
   gl.bindVertexArray(vao);
   const buf = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, buf);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
-  const loc = gl.getAttribLocation(prog, "a_pos");
-  gl.enableVertexAttribArray(loc);
-  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  const aloc = gl.getAttribLocation(prog, "a_pos");
+  gl.enableVertexAttribArray(aloc);
+  gl.vertexAttribPointer(aloc, 2, gl.FLOAT, false, 0, 0);
 
   const U = {};
-  ["u_res","u_center","u_aspect","u_echoes","u_zoom","u_falloff","u_rotate",
-   "u_rAmp","u_rFreq","u_phase","u_orgAmp","u_orgScale","u_orgEvolve",
-   "u_mix","u_gamma"].forEach(n => U[n] = gl.getUniformLocation(prog, n));
+  ["u_res","u_vanish","u_aspect","u_steps","u_zoom","u_drift","u_angle","u_decay",
+   "u_quant","u_cell","u_slitAmp","u_slitFreq","u_slitNoise","u_striAmt","u_striFreq",
+   "u_grain","u_mono","u_contrast","u_black","u_white","u_invert","u_mix","u_phase"
+  ].forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
   const tex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
-    new Uint8Array([40, 40, 50, 255]));
+    new Uint8Array([30, 30, 34, 255]));
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 
-  // ---------------------------------------------------------------- State
-  const state = {
-    center: [0.5, 0.5],
-    echoes: 18, zoom: 0.94, falloff: 0.86, rotate: 0.0,
-    rAmp: 0.025, rFreq: 38.0, speed: 0.6,
-    orgAmp: 0.012, orgScale: 4.0, orgEvolve: 0.35,
-    mix: 1.0, gamma: 1.0,
-    animate: false, wrap: "mirror",
+  // ---------------------------------------------------------------- Presets
+  const PRESETS = {
+    tunnel: {
+      angle: 90, steps: 56, zoom: 0.93, drift: 0.0, decay: 0.92,
+      quant: 0.5, cell: 0.008,
+      slitAmp: 0.006, slitFreq: 50, slitNoise: 0.3,
+      striAmt: 0.30, striFreq: 900, grain: 0.07,
+      mono: 1.0, contrast: 1.5, black: 0.06, white: 0.92, invert: 0,
+      mix: 1.0, vanish: [0.5, 0.5],
+    },
+    smear: {
+      angle: 90, steps: 96, zoom: 1.0, drift: 0.004, decay: 0.96,
+      quant: 0.0, cell: 0.01,
+      slitAmp: 0.02, slitFreq: 28, slitNoise: 0.6,
+      striAmt: 0.18, striFreq: 1200, grain: 0.05,
+      mono: 1.0, contrast: 1.6, black: 0.08, white: 0.9, invert: 0,
+      mix: 1.0, vanish: [0.5, 0.55],
+    },
+    fan: {
+      angle: 90, steps: 64, zoom: 0.9, drift: 0.0, decay: 0.9,
+      quant: 0.6, cell: 0.006,
+      slitAmp: 0.012, slitFreq: 60, slitNoise: 0.45,
+      striAmt: 0.35, striFreq: 700, grain: 0.06,
+      mono: 1.0, contrast: 1.55, black: 0.05, white: 0.93, invert: 0,
+      mix: 1.0, vanish: [0.5, 0.85],
+    },
   };
-  const DEFAULTS = JSON.parse(JSON.stringify(state));
 
-  let imgW = 0, imgH = 0, hasImage = false;
-  let phase = 0;
+  // ---------------------------------------------------------------- State
+  const state = Object.assign({ animate: false, wrap: "mirror", speed: 0.6 },
+    JSON.parse(JSON.stringify(PRESETS.tunnel)));
+  let phase = 0, imgW = 0, imgH = 0, hasImage = false;
 
-  // ---------------------------------------------------------------- Controls UI
+  // ---------------------------------------------------------------- Controls
+  // key, label, min, max, step, formatter
   const SPECS = {
-    "g-rep": [
-      ["echoes",  "Echoes",         1, 64, 1,    v => v|0],
-      ["zoom",    "Zoom per echo",  0.80, 1.20, 0.001, v => v.toFixed(3)],
-      ["falloff", "Falloff",        0.40, 1.00, 0.005, v => v.toFixed(2)],
-      ["rotate",  "Rotation/echo",  -0.30, 0.30, 0.001, v => (v).toFixed(3)],
+    "g-geo": [
+      ["angle", "Angle (°)",      0, 180, 1,     v => (v|0) + "°"],
+      ["steps", "Steps / echoes", 1, 128, 1,     v => v|0],
+      ["zoom",  "Zoom per step",  0.80, 1.20, 0.001, v => v.toFixed(3)],
+      ["drift", "Drift per step", -0.02, 0.02, 0.0002, v => v.toFixed(4)],
+      ["decay", "Falloff",        0.50, 1.00, 0.005, v => v.toFixed(2)],
     ],
-    "g-rip": [
-      ["rAmp",  "Ripple strength", 0.0, 0.12, 0.0005, v => v.toFixed(4)],
-      ["rFreq", "Ripple frequency", 2.0, 120.0, 0.5, v => v.toFixed(1)],
+    "g-step": [
+      ["quant", "Staircase amount", 0.0, 1.0, 0.01, v => v.toFixed(2)],
+      ["cell",  "Step size",        0.001, 0.05, 0.0005, v => v.toFixed(4)],
     ],
-    "g-org": [
-      ["orgAmp",    "Variation amount", 0.0, 0.06, 0.0005, v => v.toFixed(4)],
-      ["orgScale",  "Variation scale",  0.5, 16.0, 0.1, v => v.toFixed(1)],
-      ["orgEvolve", "Per-echo drift",   0.0, 2.0, 0.01, v => v.toFixed(2)],
+    "g-slit": [
+      ["slitAmp",   "Slit amount",    0.0, 0.08, 0.0005, v => v.toFixed(4)],
+      ["slitFreq",  "Slit frequency", 2.0, 160.0, 0.5, v => v.toFixed(1)],
+      ["slitNoise", "Slit organic",   0.0, 1.0, 0.01, v => v.toFixed(2)],
+    ],
+    "g-tex": [
+      ["striAmt",  "Striation amount",    0.0, 0.8, 0.01, v => v.toFixed(2)],
+      ["striFreq", "Striation frequency", 50, 4000, 10, v => v|0],
+      ["grain",    "Grain / dust",        0.0, 0.3, 0.005, v => v.toFixed(3)],
+    ],
+    "g-tone": [
+      ["mono",     "Desaturate", 0.0, 1.0, 0.01, v => v.toFixed(2)],
+      ["contrast", "Contrast",   0.5, 2.5, 0.01, v => v.toFixed(2)],
+      ["black",    "Black point", 0.0, 0.5, 0.005, v => v.toFixed(3)],
+      ["white",    "White point", 0.5, 1.2, 0.005, v => v.toFixed(3)],
     ],
     "g-mot": [
-      ["speed", "Flow speed", 0.0, 4.0, 0.01, v => v.toFixed(2)],
+      ["speed", "Flow speed", 0.0, 6.0, 0.01, v => v.toFixed(2)],
     ],
     "g-look": [
-      ["mix",   "Effect mix", 0.0, 1.0, 0.01, v => v.toFixed(2)],
-      ["gamma", "Gamma",      0.5, 2.0, 0.01, v => v.toFixed(2)],
+      ["mix", "Effect mix", 0.0, 1.0, 0.01, v => v.toFixed(2)],
     ],
   };
 
-  const controls = []; // {key, slider, num, sync, min, max, step, fmt}
+  const controls = [];
   function clamp(v, min, max) { return Math.min(max, Math.max(min, v)); }
 
   for (const [groupId, rows] of Object.entries(SPECS)) {
@@ -239,7 +262,6 @@ window.addEventListener("unhandledrejection", e =>
       const nameEl = document.createElement("span");
       nameEl.className = "name"; nameEl.textContent = name;
 
-      // editable number field (type to set the value directly)
       const num = document.createElement("input");
       num.className = "num";
       num.type = "number"; num.min = min; num.max = max; num.step = step;
@@ -254,7 +276,7 @@ window.addEventListener("unhandledrejection", e =>
 
       const ctl = {
         key, slider, num, min, max, step, fmt,
-        sync() {                       // push state -> widgets
+        sync() {
           slider.value = state[key];
           if (document.activeElement !== num) num.value = fmt(state[key]);
         },
@@ -268,7 +290,6 @@ window.addEventListener("unhandledrejection", e =>
         render();
       }
       slider.addEventListener("input", () => commit(parseFloat(slider.value)));
-      // number field: live update while typing, clamp & tidy on blur/enter
       num.addEventListener("input", () => {
         const v = parseFloat(num.value);
         if (isFinite(v)) { state[key] = clamp(v, min, max); slider.value = state[key]; render(); }
@@ -279,6 +300,13 @@ window.addEventListener("unhandledrejection", e =>
 
       controls.push(ctl);
     }
+  }
+
+  function syncAll() {
+    for (const ctl of controls) ctl.sync();
+    document.getElementById("invert").checked = state.invert >= 0.5;
+    document.getElementById("animate").checked = state.animate;
+    document.getElementById("wrapMode").value = state.wrap;
   }
 
   // ---------------------------------------------------------------- Wrap mode
@@ -293,36 +321,36 @@ window.addEventListener("unhandledrejection", e =>
 
   // ---------------------------------------------------------------- Render
   function render() {
-    if (!hasImage) {
-      gl.clearColor(0.06, 0.06, 0.08, 1);
-      gl.clear(gl.COLOR_BUFFER_BIT);
-      return;
-    }
+    if (!hasImage) { gl.clearColor(0.05, 0.05, 0.06, 1); gl.clear(gl.COLOR_BUFFER_BIT); return; }
     gl.viewport(0, 0, canvas.width, canvas.height);
     gl.uniform2f(U.u_res, canvas.width, canvas.height);
-    gl.uniform2f(U.u_center, state.center[0], state.center[1]);
+    gl.uniform2f(U.u_vanish, state.vanish[0], state.vanish[1]);
     gl.uniform1f(U.u_aspect, canvas.width / canvas.height);
-    gl.uniform1i(U.u_echoes, state.echoes | 0);
+    gl.uniform1i(U.u_steps, state.steps | 0);
     gl.uniform1f(U.u_zoom, state.zoom);
-    gl.uniform1f(U.u_falloff, state.falloff);
-    gl.uniform1f(U.u_rotate, state.rotate);
-    gl.uniform1f(U.u_rAmp, state.rAmp);
-    gl.uniform1f(U.u_rFreq, state.rFreq);
-    gl.uniform1f(U.u_phase, phase);
-    gl.uniform1f(U.u_orgAmp, state.orgAmp);
-    gl.uniform1f(U.u_orgScale, state.orgScale);
-    gl.uniform1f(U.u_orgEvolve, state.orgEvolve);
+    gl.uniform1f(U.u_drift, state.drift);
+    gl.uniform1f(U.u_angle, state.angle * Math.PI / 180);
+    gl.uniform1f(U.u_decay, state.decay);
+    gl.uniform1f(U.u_quant, state.quant);
+    gl.uniform1f(U.u_cell, state.cell);
+    gl.uniform1f(U.u_slitAmp, state.slitAmp);
+    gl.uniform1f(U.u_slitFreq, state.slitFreq);
+    gl.uniform1f(U.u_slitNoise, state.slitNoise);
+    gl.uniform1f(U.u_striAmt, state.striAmt);
+    gl.uniform1f(U.u_striFreq, state.striFreq);
+    gl.uniform1f(U.u_grain, state.grain);
+    gl.uniform1f(U.u_mono, state.mono);
+    gl.uniform1f(U.u_contrast, state.contrast);
+    gl.uniform1f(U.u_black, state.black);
+    gl.uniform1f(U.u_white, state.white);
+    gl.uniform1f(U.u_invert, state.invert);
     gl.uniform1f(U.u_mix, state.mix);
-    gl.uniform1f(U.u_gamma, state.gamma);
+    gl.uniform1f(U.u_phase, phase);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
   let rafId = null;
-  function loop() {
-    phase += state.speed * 0.05;
-    render();
-    rafId = requestAnimationFrame(loop);
-  }
+  function loop() { phase += state.speed * 0.05; render(); rafId = requestAnimationFrame(loop); }
   function setAnimate(on) {
     state.animate = on;
     if (on && rafId === null) loop();
@@ -337,7 +365,6 @@ window.addEventListener("unhandledrejection", e =>
   function loadImageBitmap(img) {
     imgW = img.naturalWidth || img.width;
     imgH = img.naturalHeight || img.height;
-    // cap resolution for performance / GPU limits
     const MAX = 2200;
     let w = imgW, h = imgH;
     const m = Math.max(w, h);
@@ -372,7 +399,6 @@ window.addEventListener("unhandledrejection", e =>
     if (e.target.files[0]) loadFromFile(e.target.files[0]);
   });
 
-  // drag & drop
   const stage = document.getElementById("stage");
   ["dragenter", "dragover"].forEach(ev => stage.addEventListener(ev, e => {
     e.preventDefault(); stage.classList.add("dragover");
@@ -380,11 +406,7 @@ window.addEventListener("unhandledrejection", e =>
   ["dragleave", "drop"].forEach(ev => stage.addEventListener(ev, e => {
     e.preventDefault(); stage.classList.remove("dragover");
   }));
-  stage.addEventListener("drop", e => {
-    const f = e.dataTransfer.files[0];
-    if (f) loadFromFile(f);
-  });
-  // paste
+  stage.addEventListener("drop", e => { const f = e.dataTransfer.files[0]; if (f) loadFromFile(f); });
   window.addEventListener("paste", e => {
     const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith("image/"));
     if (item) loadFromFile(item.getAsFile());
@@ -394,8 +416,8 @@ window.addEventListener("unhandledrejection", e =>
   function updateOriginDot() {
     const rect = canvas.getBoundingClientRect();
     const stageRect = stage.getBoundingClientRect();
-    const x = rect.left - stageRect.left + state.center[0] * rect.width;
-    const y = rect.top - stageRect.top + (1 - state.center[1]) * rect.height;
+    const x = rect.left - stageRect.left + state.vanish[0] * rect.width;
+    const y = rect.top - stageRect.top + (1 - state.vanish[1]) * rect.height;
     originDot.style.left = x + "px";
     originDot.style.top = y + "px";
   }
@@ -403,9 +425,7 @@ window.addEventListener("unhandledrejection", e =>
     const rect = canvas.getBoundingClientRect();
     let x = (e.clientX - rect.left) / rect.width;
     let y = (e.clientY - rect.top) / rect.height;
-    x = Math.min(1, Math.max(0, x));
-    y = Math.min(1, Math.max(0, y));
-    state.center = [x, 1 - y]; // flip Y for GL uv
+    state.vanish = [clamp(x, 0, 1), clamp(1 - y, 0, 1)];
     updateOriginDot();
     render();
   }
@@ -416,64 +436,71 @@ window.addEventListener("unhandledrejection", e =>
   window.addEventListener("resize", () => { if (hasImage) updateOriginDot(); });
 
   document.getElementById("centerBtn").addEventListener("click", () => {
-    state.center = [0.5, 0.5]; updateOriginDot(); render();
+    state.vanish = [0.5, 0.5]; updateOriginDot(); render();
   });
 
   // ---------------------------------------------------------------- Misc UI
   document.getElementById("animate").addEventListener("change", e => setAnimate(e.target.checked));
-  document.getElementById("wrapMode").addEventListener("change", e => {
-    state.wrap = e.target.value; applyWrap(); render();
-  });
+  document.getElementById("invert").addEventListener("change", e => { state.invert = e.target.checked ? 1 : 0; render(); });
+  document.getElementById("wrapMode").addEventListener("change", e => { state.wrap = e.target.value; applyWrap(); render(); });
+
+  function applyPreset(name) {
+    const p = PRESETS[name];
+    if (!p) return;
+    Object.assign(state, JSON.parse(JSON.stringify(p)));
+    syncAll();
+    applyWrap();
+    updateOriginDot();
+    render();
+  }
+  document.getElementById("preset").addEventListener("change", e => applyPreset(e.target.value));
 
   document.getElementById("resetBtn").addEventListener("click", () => {
-    Object.assign(state, JSON.parse(JSON.stringify(DEFAULTS)));
-    state.center = [0.5, 0.5];
-    for (const ctl of controls) ctl.sync();
-    document.getElementById("animate").checked = false;
-    document.getElementById("wrapMode").value = state.wrap;
-    setAnimate(false); applyWrap(); updateOriginDot(); render();
+    const name = document.getElementById("preset").value;
+    state.animate = false; setAnimate(false);
+    applyPreset(name);
   });
 
   document.getElementById("saveBtn").addEventListener("click", () => {
     if (!hasImage) { statusEl.textContent = "Load an image first."; return; }
-    render(); // ensure current frame is in the buffer
+    render();
     canvas.toBlob(blob => {
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = "ripple-xerox.png";
+      a.download = "scan-smear.png";
       a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     }, "image/png");
   });
 
   // ---------------------------------------------------------------- Starter image
-  // Synthesize a colorful pattern so the effect + controls are live on launch,
-  // before the user loads anything of their own.
+  // A grayscale architectural-ish pattern so the effect reads on launch.
   function makeStarterImage() {
     const c = document.createElement("canvas");
-    c.width = 1024; c.height = 768;
+    c.width = 1024; c.height = 1024;
     const x = c.getContext("2d");
-    const g = x.createLinearGradient(0, 0, c.width, c.height);
-    g.addColorStop(0, "#ff5e62"); g.addColorStop(0.5, "#7b2ff7"); g.addColorStop(1, "#21d4fd");
+    const g = x.createLinearGradient(0, 0, 0, c.height);
+    g.addColorStop(0, "#1a1a1a"); g.addColorStop(0.55, "#777"); g.addColorStop(1, "#e8e8e8");
     x.fillStyle = g; x.fillRect(0, 0, c.width, c.height);
-    const cols = ["#ffd166", "#06d6a0", "#ef476f", "#118ab2", "#ffffff", "#0b132b"];
-    for (let i = 0; i < 60; i++) {
-      const px = ((i * 97) % 32) / 32 * c.width;
-      const py = ((i * 53) % 24) / 24 * c.height;
-      const r = 18 + ((i * 31) % 70);
-      x.fillStyle = cols[i % cols.length];
-      x.globalAlpha = 0.85;
-      x.beginPath(); x.arc(px, py, r, 0, Math.PI * 2); x.fill();
+    // vertical structures
+    for (let i = 0; i < 40; i++) {
+      const px = (i / 40) * c.width;
+      x.fillStyle = i % 2 ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.14)";
+      x.fillRect(px, 0, c.width / 80, c.height);
     }
-    x.globalAlpha = 1;
-    x.fillStyle = "#0b132b";
-    x.font = "bold 90px -apple-system, sans-serif";
-    x.textAlign = "center"; x.textBaseline = "middle";
-    x.fillText("RIPPLE", c.width / 2, c.height / 2);
+    // a bright blob and a dark blob for tonal range
+    let rg = x.createRadialGradient(c.width * 0.5, c.height * 0.32, 8, c.width * 0.5, c.height * 0.32, 240);
+    rg.addColorStop(0, "rgba(255,255,255,0.95)"); rg.addColorStop(1, "rgba(255,255,255,0)");
+    x.fillStyle = rg; x.fillRect(0, 0, c.width, c.height);
+    rg = x.createRadialGradient(c.width * 0.3, c.height * 0.7, 8, c.width * 0.3, c.height * 0.7, 200);
+    rg.addColorStop(0, "rgba(0,0,0,0.8)"); rg.addColorStop(1, "rgba(0,0,0,0)");
+    x.fillStyle = rg; x.fillRect(0, 0, c.width, c.height);
     return c;
   }
-  loadImageBitmap(makeStarterImage());
-  statusEl.textContent = "Starter image — drop your own image, or click the canvas to set origin.";
 
+  syncAll();
+  applyWrap();
+  loadImageBitmap(makeStarterImage());
+  statusEl.textContent = "Starter image — drop your own, or click the canvas to set the origin.";
   render();
 })();
