@@ -4,6 +4,9 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Droste Echo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 <style>
   :root {
     --bg: #0d0e12;
@@ -19,7 +22,7 @@
     margin: 0; height: 100%;
     background: var(--bg);
     color: var(--text);
-    font: 13px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    font: 13px/1.4 "Geist", -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
     overflow: hidden;
   }
   #app { display: flex; height: 100%; }
@@ -81,7 +84,8 @@
 
   .group { margin-top: 14px; }
   .group > .label {
-    font-size: 10px; letter-spacing: .8px; text-transform: uppercase;
+    font-family: "Geist Mono", ui-monospace, Menlo, monospace;
+    font-size: 10px; letter-spacing: .6px; text-transform: uppercase;
     color: var(--muted); margin-bottom: 6px;
   }
   .ctrl { margin: 11px 0; }
@@ -89,7 +93,7 @@
   .ctrl .name { color: var(--text); }
   .ctrl .num {
     width: 76px; text-align: right; color: var(--accent);
-    font: 600 12px/1.2 ui-monospace, Menlo, monospace; font-variant-numeric: tabular-nums;
+    font: 500 12px/1.2 "Geist Mono", ui-monospace, Menlo, monospace; font-variant-numeric: tabular-nums;
     background: transparent; border: 1px solid transparent; border-radius: 6px;
     padding: 3px 6px; outline: none; cursor: text;
     -moz-appearance: textfield;
