@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Droste Echo</title>
+<title>Echo Studio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -82,6 +82,22 @@
   .scroll::-webkit-scrollbar { width: 10px; }
   .scroll::-webkit-scrollbar-thumb { background: var(--panel-2); border-radius: 8px; border: 3px solid var(--panel); }
 
+  /* ---- Master mode toggle ---- */
+  .seg {
+    display: flex; gap: 4px; margin: 12px 0 4px;
+    background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 10px; padding: 4px;
+  }
+  .seg button {
+    flex: 1; padding: 9px 8px; border-radius: 7px;
+    border: 1px solid transparent; background: transparent;
+    color: var(--muted); cursor: pointer; font-size: 12px; font-weight: 500;
+  }
+  .seg button:hover { color: var(--text); }
+  .seg button.active {
+    background: var(--accent); color: #0d0e12; font-weight: 600; border-color: var(--accent);
+  }
+
   .group { margin-top: 14px; }
   .group > .label {
     font-family: "Geist Mono", ui-monospace, Menlo, monospace;
@@ -123,7 +139,7 @@
   button {
     flex: 1; min-width: 0; padding: 9px 10px; border-radius: 8px;
     border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
-    cursor: pointer; font-size: 12px;
+    cursor: pointer; font-size: 12px; font-family: inherit;
   }
   button:hover { border-color: var(--accent); }
   button.primary { background: var(--accent); color: #0d0e12; border-color: var(--accent); font-weight: 600; }
@@ -132,7 +148,7 @@
   .hint { color: var(--muted); font-size: 11px; margin-top: 8px; }
   select {
     width: 100%; padding: 7px 8px; border-radius: 8px; background: var(--panel-2);
-    color: var(--text); border: 1px solid var(--line);
+    color: var(--text); border: 1px solid var(--line); font-family: inherit;
   }
 </style>
 </head>
@@ -149,8 +165,8 @@
 
   <div id="panel">
     <header>
-      <h1>Droste Echo</h1>
-      <p>Click the canvas to set the vanishing point the frames recede into.</p>
+      <h1>Echo Studio</h1>
+      <p>Click the canvas to set the vanishing point / origin.</p>
     </header>
     <div class="scroll">
       <div class="btns">
@@ -159,16 +175,45 @@
       </div>
       <input id="fileInput" type="file" accept="image/*" hidden />
 
-      <div class="group">
-        <div class="label">Recursion</div>
-        <div id="g-rec"></div>
+      <!-- master effect toggle -->
+      <div class="seg" id="modeSeg">
+        <button data-mode="droste" class="active">Droste echo</button>
+        <button data-mode="smear">Scan smear</button>
       </div>
 
-      <div class="group">
-        <div class="label">Frame &amp; depth</div>
-        <div id="g-frame"></div>
+      <!-- DROSTE-only controls -->
+      <div class="mode-droste">
+        <div class="group">
+          <div class="label">Recursion</div>
+          <div id="g-rec"></div>
+        </div>
+        <div class="group">
+          <div class="label">Frame &amp; depth</div>
+          <div id="g-frame"></div>
+        </div>
       </div>
 
+      <!-- SMEAR-only controls -->
+      <div class="mode-smear">
+        <div class="ctrl" style="margin-top:14px">
+          <div class="row"><span class="name">Preset</span></div>
+          <select id="preset">
+            <option value="tunnel">Perspective tunnel</option>
+            <option value="smear">Vertical smear</option>
+            <option value="fan">Fan / radial echo</option>
+          </select>
+        </div>
+        <div class="group">
+          <div class="label">Geometry</div>
+          <div id="g-geo"></div>
+        </div>
+        <div class="group">
+          <div class="label">Stepping (staircase)</div>
+          <div id="g-step"></div>
+        </div>
+      </div>
+
+      <!-- SHARED controls -->
       <div class="group">
         <div class="label">Slit-scan texture</div>
         <div id="g-slit"></div>
@@ -187,7 +232,7 @@
         <div class="label">Motion</div>
         <div class="toggle-row">
           <input type="checkbox" id="animate" />
-          <label for="animate">Animate (infinite zoom)</label>
+          <label for="animate">Animate</label>
         </div>
         <div id="g-mot"></div>
       </div>
