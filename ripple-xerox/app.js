@@ -40,6 +40,56 @@ window.addEventListener("unhandledrejection", e =>
     return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);
   }`;
 
+  // multi-point warp field, prepended to both shaders. Each draggable echo point
+  // pulls a pixel toward itself with a gaussian falloff; the displacements sum, so
+  // points near each other interfere. +strength pulls in, -strength pushes out.
+  const MAX_POINTS = 6;
+  const WARP = `
+  #define MAX_POINTS ${MAX_POINTS}
+  uniform int   u_nPoints;
+  uniform vec2  u_points[MAX_POINTS];
+  uniform float u_warpAmt;
+  uniform float u_warpRadius;
+  uniform int   u_multi;          // 1 = each point is its own echo/tunnel origin
+  uniform float u_radius;         // rounded-corner radius (0 = sharp)
+  uniform float u_seExp;          // superellipse exponent derived from u_radius
+  vec2 warpUV(vec2 uv, float aspect){
+    vec2 disp = vec2(0.0);
+    float r2inv = 1.0 / max(u_warpRadius * u_warpRadius, 1e-4);
+    for (int i = 0; i < MAX_POINTS; i++) {
+      if (i >= u_nPoints) break;
+      vec2 delta = u_points[i] - uv;
+      vec2 ad = delta * vec2(aspect, 1.0);   // aspect-correct the distance
+      float fall = exp(-dot(ad, ad) * r2inv);
+      disp += delta * fall;
+    }
+    return uv + disp * u_warpAmt;
+  }
+  // Per-pixel echo origin: inverse-distance blend of the points, so each pixel
+  // zooms toward its nearest point and adjacent tunnels merge smoothly.
+  vec2 echoCenter(vec2 uv, float aspect){
+    vec2 acc = vec2(0.0); float wsum = 0.0;
+    for (int i = 0; i < MAX_POINTS; i++) {
+      if (i >= u_nPoints) break;
+      vec2 d = (u_points[i] - uv) * vec2(aspect, 1.0);
+      float w = 1.0 / (dot(d, d) + 1e-4);
+      acc += u_points[i] * w; wsum += w;
+    }
+    return acc / max(wsum, 1e-4);
+  }
+  vec2 originFor(vec2 uv, vec2 fallback, float aspect){
+    return (u_multi == 1 && u_nPoints > 0) ? echoCenter(uv, aspect) : fallback;
+  }
+  // soft alpha mask matching the superellipse ring shape, so the outer edge rounds
+  // by the same amount as every echo frame. 1 inside, fades to 0 just outside.
+  float cornerMask(vec2 uv, float aspect){
+    if (u_radius <= 0.0) return 1.0;
+    vec2 c = abs(uv - 0.5) * 2.0;           // 0..1 per axis, 1 at the image edge
+    float nrm = pow(pow(c.x, u_seExp) + pow(c.y, u_seExp), 1.0 / u_seExp);
+    float aa = 2.0 / max(u_res.y, 1.0);
+    return 1.0 - smoothstep(1.0 - aa, 1.0 + aa, nrm);
+  }`;
+
   // ---- Droste echo (recursive nested frames) ----
   const FRAG_DROSTE = `#version 300 es
   precision highp float;
@@ -70,13 +120,23 @@ window.addEventListener("unhandledrejection", e =>
   uniform float u_invert;
   uniform float u_mix;
   ${NOISE}
+  ${WARP}
   vec2 rot(vec2 v, float a){ float c=cos(a), s=sin(a); return mat2(c,-s,s,c)*v; }
+  // radial coordinate for the recursion rings. Box (Chebyshev) by default; a
+  // superellipse when u_radius>0, which rounds every echo ring by the same amount
+  // (it's a self-similar metric, so inner and outer frames round identically).
+  float ringT(float tx, float ty){
+    if (u_radius <= 0.0) return max(tx, ty);
+    float p = u_seExp;
+    return pow(pow(tx, p) + pow(ty, p), 1.0 / p);
+  }
   void main(){
-    vec2 V = u_vanish;
-    vec2 e = v_uv - V;
+    vec2 uv = warpUV(v_uv, u_aspect);
+    vec2 V = originFor(uv, u_vanish, u_aspect);
+    vec2 e = uv - V;
     float tx = e.x > 0.0 ? e.x / max(1.0 - V.x, 1e-4) : -e.x / max(V.x, 1e-4);
     float ty = e.y > 0.0 ? e.y / max(1.0 - V.y, 1e-4) : -e.y / max(V.y, 1e-4);
-    float t  = max(max(tx, ty), 1e-5);
+    float t  = max(ringT(tx, ty), 1e-5);
 
     float lf = log(u_scale);
     float level = log(t) / lf + u_zoomPhase;
@@ -112,7 +172,9 @@ window.addEventListener("unhandledrejection", e =>
     toned = clamp(toned, 0.0, 1.0);
 
     vec3 base = texture(u_img, v_uv).rgb;
-    outColor = vec4(mix(base, toned, u_mix), 1.0);
+    vec3 outc = mix(base, toned, u_mix);
+    float m = cornerMask(v_uv, u_aspect);
+    outColor = vec4(outc * m, m);            // premultiplied for rounded-corner alpha
   }`;
 
   // ---- Scan smear (slit-scan + perspective accumulation) ----
@@ -145,12 +207,14 @@ window.addEventListener("unhandledrejection", e =>
   uniform float u_mix;
   uniform float u_phase;
   ${NOISE}
+  ${WARP}
   void main(){
     vec2 asp  = vec2(u_aspect, 1.0);
     vec2 dir  = vec2(cos(u_angle), sin(u_angle));
     vec2 perp = vec2(-dir.y, dir.x);
 
-    vec2 p = v_uv;
+    vec2 p = warpUV(v_uv, u_aspect);
+    vec2 Vc = originFor(p, u_vanish, u_aspect);   // per-pixel tunnel origin
     vec3 col = vec3(0.0);
     float wsum = 0.0, w = 1.0;
 
@@ -158,15 +222,16 @@ window.addEventListener("unhandledrejection", e =>
     for (int i = 0; i < 128; i++) {
       if (i >= steps) break;
       vec2 sp = p;
-      float across = dot((sp - u_vanish) * asp, perp);
+      float across = dot((sp - Vc) * asp, perp);
       float s = sin(across * u_slitFreq - u_phase);
       float n = vnoise(vec2(across * u_slitFreq * 0.15, float(i) * 0.7)) - 0.5;
       sp += dir * ((s * u_slitAmp) + n * u_slitNoise) / asp;
       vec2 q = floor(sp / u_cell + 0.5) * u_cell;
       sp = mix(sp, q, u_quant);
       vec3 c = texture(u_img, sp).rgb;
-      col += c * w; wsum += w; w *= u_decay;
-      p = u_vanish + (p - u_vanish) * u_zoom + dir * u_drift;
+      float cm = cornerMask(sp, u_aspect);   // round each copy's corners
+      col += c * (w * cm); wsum += w * cm; w *= u_decay;
+      p = Vc + (p - Vc) * u_zoom + dir * u_drift;
     }
     col /= max(wsum, 1e-4);
 
@@ -182,7 +247,9 @@ window.addEventListener("unhandledrejection", e =>
     toned = clamp(toned, 0.0, 1.0);
 
     vec3 base = texture(u_img, v_uv).rgb;
-    outColor = vec4(mix(base, toned, u_mix), 1.0);
+    vec3 outc = mix(base, toned, u_mix);
+    float m = cornerMask(v_uv, u_aspect);
+    outColor = vec4(outc * m, m);            // premultiplied for rounded-corner alpha
   }`;
 
   // ---------------------------------------------------------------- GL setup
@@ -216,7 +283,7 @@ window.addEventListener("unhandledrejection", e =>
 
   const SHARED_U = ["u_res","u_vanish","u_aspect","u_slitAmp","u_slitFreq","u_slitNoise",
     "u_phase","u_striAmt","u_striFreq","u_grain","u_mono","u_contrast","u_black","u_white",
-    "u_invert","u_mix"];
+    "u_invert","u_mix","u_nPoints","u_points","u_warpAmt","u_warpRadius","u_multi","u_radius","u_seExp"];
   const droste = buildProgram(FRAG_DROSTE,
     SHARED_U.concat(["u_copies","u_scale","u_rotate","u_zoomPhase","u_depthFade","u_frameAmt","u_frameW"]));
   const smear = buildProgram(FRAG_SMEAR,
@@ -251,20 +318,28 @@ window.addEventListener("unhandledrejection", e =>
   };
 
   // ---------------------------------------------------------------- State (union of both modes)
+  // Neutral start: every effect is a no-op so the loaded image passes through
+  // unchanged. Amount sliders sit at 0; multipliers sit at their identity value
+  // (zoom/decay/white/contrast = 1.0); copy counts = 1 (single, unstacked image).
+  // `mix` stays at 1.0 so the (currently no-op) effect is fully blended in — bump
+  // any single slider to see exactly what it does. Reset returns here too.
   const DEFAULTS = {
     mode: "droste",
     vanish: [0.5, 0.42],
     // droste geometry
-    copies: 14, scale: 0.78, rotate: 0.0,
-    depthFade: 0.12, frameAmt: 0.45, frameW: 0.006,
+    copies: 1, scale: 0.78, rotate: 0.0,
+    depthFade: 0.0, frameAmt: 0.0, frameW: 0.006,
     // smear geometry
-    angle: 90, steps: 56, zoom: 0.93, drift: 0.0, decay: 0.92, quant: 0.5, cell: 0.008,
+    angle: 90, steps: 1, zoom: 1.0, drift: 0.0, decay: 1.0, quant: 0.0, cell: 0.008,
     // shared
-    slitAmp: 0.004, slitFreq: 40, slitNoise: 0.25,
-    striAmt: 0.22, striFreq: 800, grain: 0.06,
-    mono: 1.0, contrast: 1.45, black: 0.05, white: 0.93, invert: 0,
-    mix: 1.0, speed: 0.4,
+    slitAmp: 0.0, slitFreq: 40, slitNoise: 0.0,
+    striAmt: 0.0, striFreq: 800, grain: 0.0,
+    mono: 0.0, contrast: 1.0, black: 0.0, white: 1.0, invert: 0,
+    mix: 1.0, speed: 0.0, radius: 0.0,
     animate: false, wrap: "clamp",
+    // echo points: list of [x,y] in 0..1. warpAmt/Radius drive the warp field;
+    // multiOrigin makes each point its own echo/tunnel origin.
+    points: [], warpAmt: 0.0, warpRadius: 0.25, multiOrigin: true,
   };
   const state = JSON.parse(JSON.stringify(DEFAULTS));
   let phase = 0, zoomPhase = 0, imgW = 0, imgH = 0, hasImage = false;
@@ -310,7 +385,12 @@ window.addEventListener("unhandledrejection", e =>
       ["speed", "Speed", 0.0, 6.0, 0.01, v => v.toFixed(2)],
     ],
     "g-look": [
-      ["mix", "Effect mix", 0.0, 1.0, 0.01, v => v.toFixed(2)],
+      ["mix",    "Effect mix",    0.0, 1.0, 0.01, v => v.toFixed(2)],
+      ["radius", "Corner radius", 0.0, 1.0, 0.01, v => v.toFixed(2)],
+    ],
+    "g-warp": [
+      ["warpAmt",    "Warp strength", -1.0, 1.0, 0.01, v => v.toFixed(2)],
+      ["warpRadius", "Warp radius",   0.02, 1.0, 0.01, v => v.toFixed(2)],
     ],
   };
 
@@ -360,6 +440,7 @@ window.addEventListener("unhandledrejection", e =>
     document.getElementById("invert").checked = state.invert >= 0.5;
     document.getElementById("animate").checked = state.animate;
     document.getElementById("wrapMode").value = state.wrap;
+    document.getElementById("multiOrigin").checked = state.multiOrigin;
   }
 
   // ---------------------------------------------------------------- Mode toggle
@@ -389,10 +470,22 @@ window.addEventListener("unhandledrejection", e =>
   }
 
   // ---------------------------------------------------------------- Render
+  const pointsBuf = new Float32Array(MAX_POINTS * 2);
   function setShared(U) {
     gl.uniform2f(U.u_res, canvas.width, canvas.height);
     gl.uniform2f(U.u_vanish, state.vanish[0], state.vanish[1]);
     gl.uniform1f(U.u_aspect, canvas.width / canvas.height);
+    const n = Math.min(state.points.length, MAX_POINTS);
+    pointsBuf.fill(0);
+    for (let i = 0; i < n; i++) { pointsBuf[i * 2] = state.points[i][0]; pointsBuf[i * 2 + 1] = state.points[i][1]; }
+    gl.uniform1i(U.u_nPoints, n);
+    gl.uniform2fv(U.u_points, pointsBuf);
+    gl.uniform1f(U.u_warpAmt, state.warpAmt);
+    gl.uniform1f(U.u_warpRadius, state.warpRadius);
+    gl.uniform1i(U.u_multi, state.multiOrigin ? 1 : 0);
+    gl.uniform1f(U.u_radius, state.radius);
+    // radius 0 -> ~box (exp 40, sharp corners); radius 1 -> exp 2 (most rounded)
+    gl.uniform1f(U.u_seExp, 2.0 + (1.0 - Math.min(Math.max(state.radius, 0), 1)) * 38.0);
     gl.uniform1f(U.u_slitAmp, state.slitAmp);
     gl.uniform1f(U.u_slitFreq, state.slitFreq);
     gl.uniform1f(U.u_slitNoise, state.slitNoise);
@@ -474,6 +567,7 @@ window.addEventListener("unhandledrejection", e =>
     dropHint.classList.add("hidden");
     originDot.style.display = "block";
     updateOriginDot();
+    rebuildPointDots();
     statusEl.textContent = `${imgW}×${imgH}px${m > MAX ? ` (rendering at ${w}×${h})` : ""}`;
     render();
   }
@@ -525,10 +619,104 @@ window.addEventListener("unhandledrejection", e =>
   canvas.addEventListener("pointerdown", e => { dragging = true; setOriginFromEvent(e); canvas.setPointerCapture(e.pointerId); });
   canvas.addEventListener("pointermove", e => { if (dragging) setOriginFromEvent(e); });
   canvas.addEventListener("pointerup", () => { dragging = false; });
-  window.addEventListener("resize", () => { if (hasImage) updateOriginDot(); });
+  window.addEventListener("resize", () => { if (hasImage) { updateOriginDot(); updatePointDots(); } });
 
   document.getElementById("centerBtn").addEventListener("click", () => {
     state.vanish = [0.5, 0.5]; updateOriginDot(); render();
+  });
+
+  // ---------------------------------------------------------------- Echo points
+  const pointDots = [];
+  const pointsHint = document.getElementById("pointsHint");
+
+  function placeDot(el, p) {
+    const rect = canvas.getBoundingClientRect();
+    const stageRect = stage.getBoundingClientRect();
+    el.style.left = (rect.left - stageRect.left + p[0] * rect.width) + "px";
+    el.style.top = (rect.top - stageRect.top + (1 - p[1]) * rect.height) + "px";
+  }
+  function updatePointDots() {
+    for (let i = 0; i < pointDots.length; i++) placeDot(pointDots[i], state.points[i]);
+  }
+  function startDotDrag(el, i, e) {
+    e.preventDefault(); e.stopPropagation();
+    el.setPointerCapture(e.pointerId);
+    el.classList.add("dragging");
+    const move = ev => {
+      const rect = canvas.getBoundingClientRect();
+      const x = (ev.clientX - rect.left) / rect.width;
+      const y = (ev.clientY - rect.top) / rect.height;
+      state.points[i] = [clamp(x, 0, 1), clamp(1 - y, 0, 1)];
+      placeDot(el, state.points[i]);
+      render();
+    };
+    const up = ev => {
+      el.classList.remove("dragging");
+      el.releasePointerCapture(ev.pointerId);
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+  }
+  function rebuildPointDots() {
+    pointDots.forEach(el => el.remove());
+    pointDots.length = 0;
+    state.points.forEach((p, i) => {
+      const el = document.createElement("div");
+      el.className = "warp-dot";
+      el.dataset.i = i + 1;
+      el.style.display = hasImage ? "block" : "none";
+      el.addEventListener("pointerdown", e => startDotDrag(el, i, e));
+      el.addEventListener("dblclick", e => { e.preventDefault(); e.stopPropagation(); removePoint(i); });
+      stage.appendChild(el);
+      pointDots.push(el);
+    });
+    updatePointDots();
+    updatePointsHint();
+  }
+  function updatePointsHint() {
+    const n = state.points.length;
+    pointsHint.textContent = n
+      ? `${n} / ${MAX_POINTS} points · drag to move, double-click to remove`
+      : "Add points, then drag the orange dots. Double-click a dot to remove it.";
+  }
+  function addPoint() {
+    if (state.points.length >= MAX_POINTS) {
+      statusEl.textContent = `Max ${MAX_POINTS} echo points.`;
+      return;
+    }
+    // fan new points out around center so they don't stack on top of each other
+    const k = state.points.length;
+    const a = k * 1.25, r = 0.18;
+    state.points.push([clamp(0.5 + r * Math.cos(a), 0.04, 0.96),
+                       clamp(0.5 + r * Math.sin(a), 0.04, 0.96)]);
+    // make the new point do something visible given its current role:
+    if (state.multiOrigin) {
+      // tunnels need >1 copy/step — lift them off the neutral baseline of 1
+      if (state.copies <= 1) state.copies = 10;
+      if (state.steps <= 1) state.steps = 48;
+    } else if (state.warpAmt === 0) {
+      state.warpAmt = 0.35;   // pure-warp mode: give it some strength to see
+    }
+    syncAll();
+    rebuildPointDots();
+    render();
+  }
+  function removePoint(i) {
+    state.points.splice(i, 1);
+    rebuildPointDots();   // indices/labels shift, so rebuild
+    render();
+  }
+  document.getElementById("addPointBtn").addEventListener("click", addPoint);
+  document.getElementById("clearPointsBtn").addEventListener("click", () => {
+    state.points = [];
+    rebuildPointDots();
+    render();
+  });
+  document.getElementById("multiOrigin").addEventListener("change", e => {
+    state.multiOrigin = e.target.checked;
+    render();
   });
 
   // ---------------------------------------------------------------- Misc UI
@@ -549,7 +737,7 @@ window.addEventListener("unhandledrejection", e =>
     Object.assign(state, JSON.parse(JSON.stringify(DEFAULTS)));
     state.mode = mode;                 // reset values but keep the chosen effect
     setAnimate(false);
-    syncAll(); applyWrap(); applyMode(); updateOriginDot(); render();
+    syncAll(); applyWrap(); applyMode(); updateOriginDot(); rebuildPointDots(); render();
   });
 
   document.getElementById("saveBtn").addEventListener("click", () => {

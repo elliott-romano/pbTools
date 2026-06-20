@@ -66,6 +66,20 @@
     box-shadow: 0 0 0 2px rgba(0,0,0,.6), 0 0 12px rgba(110,168,254,.9);
     pointer-events: none; mix-blend-mode: difference; display: none;
   }
+  .warp-dot {
+    position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px;
+    border: 2px solid #ffb454; border-radius: 50%;
+    background: rgba(255,180,84,.18);
+    box-shadow: 0 0 0 2px rgba(0,0,0,.6), 0 0 10px rgba(255,180,84,.9);
+    cursor: grab; touch-action: none; display: none;
+  }
+  .warp-dot.dragging { cursor: grabbing; }
+  .warp-dot::after {
+    content: attr(data-i);
+    position: absolute; left: 50%; top: -16px; transform: translateX(-50%);
+    font: 600 9px/1 "Geist Mono", ui-monospace, monospace; color: #ffb454;
+    text-shadow: 0 0 3px #000;
+  }
 
   /* ---- Panel ---- */
   #panel {
@@ -214,6 +228,20 @@
       </div>
 
       <!-- SHARED controls -->
+      <div class="group">
+        <div class="label">Echo points</div>
+        <div class="btns">
+          <button id="addPointBtn">+ Add point</button>
+          <button id="clearPointsBtn">Clear</button>
+        </div>
+        <div class="toggle-row">
+          <input type="checkbox" id="multiOrigin" checked />
+          <label for="multiOrigin">Each point is its own echo</label>
+        </div>
+        <div id="g-warp"></div>
+        <div class="hint" id="pointsHint">Drag the orange dots on the canvas. Double-click a dot to remove it.</div>
+      </div>
+
       <div class="group">
         <div class="label">Slit-scan texture</div>
         <div id="g-slit"></div>
